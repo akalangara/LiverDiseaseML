@@ -1,0 +1,382 @@
+---
+title: "\\vspace{-2.0cm} Multinomial Logistic Regression Model to Diagnose Liver Disease Progression via Blood Panel Measures and Patient Characteristics"
+author: "Alisha Kalangara"
+output:
+  pdf_document: default
+  fig_caption: yes
+header-includes:
+- \usepackage[font=bf]{caption}
+- \captionsetup[table]{skip=2pt}
+- \usepackage{booktabs}
+- \setlength{\abovecaptionskip}{2pt}
+- \setlength{\belowcaptionskip}{-12pt}
+- \usepackage{float}
+- \floatplacement{figure}{H}
+---
+\vspace{-1.5cm}
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+here::i_am('FinalProject.Rmd')
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+require(glmnet)
+library(table1)
+library(flextable)
+library(dplyr)
+library(kableExtra)
+library(tinytex)
+```
+
+```{r include=FALSE}
+set.seed(1234)
+data <- read.table(here::here("Data","HepatitisCdata.csv"), header = TRUE, sep = ",")
+data_prepped <- data[complete.cases(data),] %>%
+     filter(!Category == "0s=suspect Blood Donor") %>%
+     mutate(MALE = case_when(
+               Sex == "m" ~ 1,
+               Sex != "m" ~ 0),
+            Diagnosis = factor(substr(Category,1,1),
+                               labels = c('Blood Donor','Hepatitis',
+                                          'Fibrosis','Cirrhosis'))) %>%
+     select(-c(Sex,Category,X))
+```
+
+## Introduction & Background  
+The liver is an especially important organ in the human body. Responsible for filtering blood and the metabolism of macronutrients, among other responsibilities, the liver can also be the target of viral infection.^1^ Viral infection can result in chronic and acute infection that can affect the liver to varying degrees. Infection by a viral agent, can result in inflammation of the liver, broadly called Hepatitis.^1^ This can progress further to fibrosis, the scarring of liver tissue; and further still to cirrhosis, late stage scarring that impairs liver function.^2^  
+
+One such viral agent that results in Hepatitis is Hepatitis C virus (HCV). Most HCV patients are asymptomatic, and greater than 50% will develop chronic infection which can progress to cirrhosis.^3^ Since liver damage caused by cirrhosis is irreversible, it is best that these patients undergo regular testing to monitor liver disease progress.^2^ The golden standard for liver fibrosis evaluation is liver biopsy, but this is an invasive procedure.^4^. In contrast, blood work is minimally invasive, conducted routinely, and specific liver function blood panels have been developed to help with assessing liver function.^5^ Additionally, as approximately 50% of those infected with Hepatitis C are unaware they are infected, blood work can also be used to notify potential patients of infection.^1^ This report aims to develop a multinomial logistic regression model that utilizes blood lab results, as well as patient characteristics like age and biological sex (1 if Male), to accurately classify the progression of liver disease.
+
+## Methods  
+The data used to develop the model was provided on Kaggle and originally collected by Lichtinghagen et al.^4,6^ In this study, donors were recruited from blood donors at Hannover Medical School.^4^ These donors were screened using multiple tests and measures for acute or chronic liver disease, as well as other factors associated with liver disease.^4^ HCV patient were also recruited and each submitted a liver biopsy.^4^ Liver biopsies were used to diagnose HCV patients, and all people recruited in the study provided blood samples. Table 1 shows what all information was collected for patients including blood marker measures.^5^  
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+dict = read.csv(here::here("Data", "blood_table.csv"))
+colnames(dict)<-c("Measure","Definition")
+kable(dict, format = "latex",caption = "Data Dictionary") %>% kable_styling()
+```
+  
+In the original dataset, there were those who were classified as "suspect Blood Donor" (n = `r nrow(filter(data, Category == "0s=suspect Blood Donor"))`). For the purpose of this analysis, this class of was excluded as it was unclear what was meant by this label. Additional participants were excluded if they had missing data. Table 2 below characterizes the participants that were included. 
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#create factor variable
+data_t <- data_prepped
+data_t$MALE <- factor(data_t$MALE, levels = c(1,0),
+         labels=c("Male", "Female"))
+
+#create labels and units
+label(data_t$ALB) <- "Albumin"
+units(data_t$ALB)   <- "g/L"
+label(data_t$ALP)   <- "Alkaline\nPhospatase"
+units(data_t$ALP)   <- "U/L"
+label(data_t$ALT)   <- "Alanine\nTransaminase"
+units(data_t$ALT)   <- "U/L"
+label(data_t$AST)   <- "Aspartate\nTransaminase"
+units(data_t$AST)   <- "U/L"
+label(data_t$BIL)  <- "Bilirubin"
+units(data_t$BIL)   <- "mcmol/L"
+label(data_t$CHE)  <- "Acetyl-\ncholinesterase"
+units(data_t$CHE)   <- "U/L"
+label(data_t$CHOL)  <- "Cholesterol"
+units(data_t$CHOL)   <- "mmol/L"
+label(data_t$CREA)  <- "Creatinine"
+units(data_t$CREA)   <- "mcmol/L"
+label(data_t$GGT)  <- "Gamma-\nglutamyltransferase"
+units(data_t$GGT)   <- "U/L"
+label(data_t$PROT)  <- "Total Protein"
+units(data_t$PROT)   <- "g/L"
+label(data_t$MALE)  <- "Biological Sex"
+label(data_t$Diagnosis)  <- "Diagnosis"
+
+#functions to specify formatting
+my.render.cont <- function(x) {
+  with(stats.apply.rounding(stats.default(x)), 
+       c("", "Mean (SD)" = sprintf("%.1f (%.1f)", as.numeric(MEAN), 
+                                   as.numeric(SD))))
+}
+
+my.render.cat <- function(x) {
+  c("", sapply(stats.default(x), function(y) 
+    with(y, sprintf("%d (%0.0f%%)", FREQ, PCT))))
+}
+
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+#create flextable obj
+t2<-table1(~ALB + ALP + ALT + AST + BIL + CHE + CHOL + CREA + GGT + PROT + MALE 
+           | Diagnosis, data = data_t,
+       caption="Participant Characteristics",
+       render.continuous = my.render.cont,
+       render.categorical = my.render.cat,
+       render.missing=NULL)%>% t1flex() %>% FitFlextableToPage()
+knit_print(t2)
+```
+  
+To fit the model, the *glmnet* package was used. Cross-validation with k=10 folds was conducted. The function automatically employs feature scaling (named standardization in the function) via mean normalization and also conducts standardization to account for regularization. Predictions using the lambda that corresponded with the lowest misclassification error, as well as that from a model that is within one standard error of the predictions from the “best” model will be examined. Models were fit using both ridge regression and LASSO so that their misclassification rates could be compared.
+
+
+## Results & Discussion  
+```{r include =FALSE, warning=FALSE, message=FALSE}
+xm <- as.matrix(cbind(pad = 1, data_prepped[,-13]))
+ym <-as.matrix(data_prepped[,13])
+cvfit_R <- cv.glmnet(xm, ym, alpha = 0, family = "multinomial", maxit = 600000, 
+                   k = 10, standardize = TRUE, type="class")
+cvfit_L <- cv.glmnet(xm, ym, alpha = 1, family = "multinomial", 
+                   type.multinomial = "ungrouped", maxit = 60000, 
+                   k = 10, standardize = TRUE, type="class")
+```
+The plots below show the misclassification errors for both the Ridge Regression and LASSO model fits. The vertical lines depict the values of lambda that are the minimum, thought to the optimal lambda because misclassification error is minimized, and the 1se lambda where predictions from this model are within 1 standard error of the "optimal model". Numbers along the top to the plot depict the number of features included in the model. For Ridge Regression this remains 12. For LASSO, where parameters are allowed to go to 0, both the minimum lambda model uses 7 features while the 1se lambda model uses 5 features.  
+```{r echo=FALSE, fig.cap="", fig.align='center',fig.width=8}
+par(mfrow=c(1,2),mar=c(4,4,4,1))
+plot(cvfit_R)
+title(main = "Misclassification Error for Lambda Values - Ridge Regression", line = 3,
+      cex.main = 0.6)
+title(sub = ("Number of Features Included in Model"),  line = -17.5, cex.sub = 0.5)
+plot(cvfit_L)
+title(main = "Misclassification Error for Lambda Values - LASSO", line = 3,
+      cex.main = 0.6)
+title(sub = ("Number of Features Included in Model"),  line = -17.5, cex.sub = 0.5)
+
+```
+  
+```{r include=FALSE}
+pred_min_R<-predict(cvfit_R, newx = xm, 
+                s = "lambda.min", type = "class")
+pred_1se_R<-predict(cvfit_R, newx = xm, 
+                  s = "lambda.1se", type = "class")
+pred_min_L<-predict(cvfit_L, newx = xm, 
+                s = "lambda.min", type = "class")
+pred_1se_L<-predict(cvfit_L, newx = xm, 
+                  s = "lambda.1se", type = "class")
+```
+  
+```{r include=FALSE}
+o = c("Blood Donor","Hepatitis", "Fibrosis","Cirrhosis")
+misclass_tab_minR <- table(pred_min_R,ym)[,o]
+misclass_tab_minR2<-data.frame(unclass(misclass_tab_minR))
+
+misclass_tab_minL <- table(pred_min_L,ym)[,o]
+misclass_tab_minL2<-data.frame(unclass(misclass_tab_minL))
+
+misclass_tab_1seR <- table(pred_1se_R,ym)[,o]
+misclass_tab_1seR2<-data.frame(unclass(misclass_tab_1seR))
+
+misclass_tab_1seL <- table(pred_1se_L,ym)[,o]
+misclass_tab_1seL2<-data.frame(unclass(misclass_tab_1seL))
+
+misclass_rate_minR <- 1-sum(diag(misclass_tab_minR))/sum(misclass_tab_minR)
+misclass_rate_minL <- 1-sum(diag(misclass_tab_minL))/sum(misclass_tab_minL)
+misclass_rate_1seR <- 1-sum(diag(misclass_tab_1seR))/sum(misclass_tab_1seR)
+misclass_rate_1seL <- 1-sum(diag(misclass_tab_1seL))/sum(misclass_tab_1seL)
+```
+  
+One of the ways to assess these models is to simply compare the misclassification rates when each type of model is fit to the entire dataset. Table 3 depicts these misclassification rates.  
+```{r echo=FALSE}
+d <-data.frame(c(misclass_rate_1seL,misclass_rate_minR,misclass_rate_minL,misclass_rate_1seR))
+rownames(d) <- c("LASSO 1SE","Ridge Regression Min","LASSO Min","Ride Regression 1SE")
+
+t3 <- kable(d, format = "latex", caption = "Misclassification Rates of Models", col.names = c(""), booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+t3
+```
+  
+As can be seen, the LASSO model using the 1SE lambda has the smallest misclassification rate while LASSO model using minimum lambda had the largest misclassification rate. Based off these results, the LASSO model using the 1SE lambda may be the most appropriate to use to minimize misclassification, but ultimately these models all have fairly similar results.  
+
+As a result, it may be more useful to see how the models did in diagnosis. Below, the misclassifcation table for each model is given. The columns indicate the true diagnoses while the rows indicate the model diagnosis. General trends across models seem to be that classification of blood donors and cirrhosis (the ends of the spectrum) are fairly accurate across all models. Most models, however failed to classify any patients as having fibrosis. These results likely occurred as there is limited data for fibrosis and that the data is mostly weighted with donor information.    
+```{r echo = FALSE, results='asis', warning=FALSE, message=FALSE}
+row.names(misclass_tab_minR2) <- paste('Predicted', rownames(misclass_tab_minR2))
+t4 <- kable(misclass_tab_minR2, format = "latex", col.names = o, caption = "Misclassification Table Ridge Regression Using Minimum Lambda", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+t4
+```
+  
+```{r echo = FALSE, results='asis', warning=FALSE, message=FALSE}
+row.names(misclass_tab_minL2) <- paste('Predicted', rownames(misclass_tab_minL2))
+t5 <- kable(misclass_tab_minL2, format = "latex", col.names = o, caption = "Misclassification Table LASSO Using Minimum Lambda", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+t5
+```
+  
+```{r echo = FALSE, results='asis', warning=FALSE, message=FALSE}
+row.names(misclass_tab_1seR2) <- paste('Predicted', rownames(misclass_tab_1seR2))
+t6 <- kable(misclass_tab_1seR2, format = "latex", col.names = o, caption = "Misclassification Table Ridge Regression Using 1SE Lambda", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+t6
+```
+  
+```{r echo = FALSE, results='asis', warning=FALSE, message=FALSE}
+row.names(misclass_tab_1seL2) <- paste('Predicted', rownames(misclass_tab_1seL2))
+t7 <- kable(misclass_tab_1seL2, format = "latex", col.names = o, caption = "Misclassification Table LASSO Using 1SE Lambda", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+t7
+```
+  
+In the context of clinical significance, detecting the the transition from "blood donor" (uninfected) to hepatitis is meaningful in that it can be used to alert those who are unaware of being infected, and treatment can begin earlier to monitor for liver disease progression. Additionally, it is also meaningful to be able to detect the transition from hepatitis to fibrosis as treating fibrosis can keep irreparable cirrhosis damage at bay. Based on these ideals, the most informative model would be LASSO using the minimum Lambda.  
+
+The multinomial regression model constructs separate logistic regression models for each class using a one vs all approach. It then assigns the prediction based on whichever model gives the maximum estimated probability.  The coefficients for each model is given below. Because the LASSO model was selected, some models use only a subset of the features as some features have a coefficient of 0.   
+
+```{r echo=FALSE, results='asis'}
+vals <-coef(cvfit_L, s = cvfit_L$lambda.min)
+
+coefDF <- function (dgMatrix) {
+  df <- as.data.frame(as.matrix(dgMatrix))
+  df[,1] <- round(df[,1], 4)
+  df[df == 0.0000] <- "0"
+  df <- as.data.frame(df[-(1:2),])
+  rownames(df) <-c("Age","ALB","ALP","ALT","AST","BIL","CHE","CHOL","CREA","GGT",
+                   "PROT", "MALE")
+  df
+}
+
+BDc <- coefDF(vals$`Blood Donor`)
+Hc <- coefDF(vals$Hepatitis)
+Fc <- coefDF(vals$Fibrosis)
+Cc <- coefDF(vals$Cirrhosis)
+
+
+tB <- kable(BDc, format = "latex", col.names = "Coefficient", caption = "Blood Donor", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+
+tH <- kable(Hc, format = "latex", col.names = "Coefficient", caption = "Hepatitis", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+
+tF <- kable(Fc, format = "latex", col.names = "Coefficient", caption = "Fibrosis", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+
+tC <- kable(Cc, format = "latex", col.names = "Coefficient", caption = "Cirrhosis", booktabs = TRUE) %>%
+  kable_styling(latex_options = "HOLD_position")
+
+cat(c("\\begin{table}[H]
+    \\begin{minipage}{.5\\linewidth}
+      \\centering",
+        tB,
+    "\\end{minipage}%
+    \\hspace{-1.25cm}
+    \\begin{minipage}{.7\\linewidth}
+      \\centering",
+        tH,
+    "\\end{minipage} 
+\\end{table}"
+))
+
+cat(c("\\begin{table}[H]
+    \\begin{minipage}{.5\\linewidth}
+      \\centering",
+        tF,
+    "\\end{minipage}%
+    \\hspace{-1.25cm}
+    \\begin{minipage}{.7\\linewidth}
+      \\centering",
+        tC,
+    "\\end{minipage} 
+\\end{table}"
+))
+```
+
+
+## Conclusion  
+In conclusion it looks like the most clinically meaningful model was the LASSO model which used the minimum lambda. This model is of limited utility, as were all the models due to the nature of the data used to train it. None the less, the model does a good job at characterizing donor blood and cirrhosis, which, though not the most clinically pressing need, can still be useful to inform those who are not infected or experiencing liver disease without the need for invasive tests. The model does a fair job characterizing hepatitis and fibrosis but it is likely necessary to supplement the outcome of the model with additional data through physical tests or additional lab tests.
+
+## References  
+\setlength{\parindent}{-0.2in}
+\setlength{\leftskip}{0.2in}
+\setlength{\parskip}{7pt}
+\noindent
+
+^1^   “What Is Viral Hepatitis?” Centers for Disease Control and Prevention, Centers for Disease Control and Prevention, 28 July 2020, https://www.cdc.gov/hepatitis/abc/index.htm.
+
+^2^   “Cirrhosis.” Mayo Clinic, Mayo Foundation for Medical Education and Research, 6 Feb. 2021, https://www.mayoclinic.org/diseases-conditions/cirrhosis/symptoms-causes/syc-20351487.
+
+^3^   Castaneda D, Gonzalez AJ, Alomari M, Tandon K, Zervos XB. From hepatitis A to E: A critical review of viral hepatitis. World J Gastroenterol. 2021;27(16):1691-1715. doi:10.3748/wjg.v27.i16.1691.
+  
+^4^   Lichtinghagen, Ralf & Pietsch, Daniel & Bantel, Heike & Manns, Michael & Brand, Korbinian & Bahr, Matthias. (2013). The Enhanced Liver Fibrosis (ELF) Score: Normal Values, Influence Factors and Proposed Cut-Off Values.. Journal of hepatology. 59. 10.1016/j.jhep.2013.03.016.
+  
+^5^   “Liver Function Tests.” Mayo Clinic, Mayo Foundation for Medical Education and Research, 18 Aug. 2021, https://www.mayoclinic.org/tests-procedures/liver-function-tests/about/pac-20394595.
+  
+^6^ Fedesoriano. (2021, November). [Hepatitis C Prediction Dataset],Version 1. Retrieved December 10, 2021 from https://www.kaggle.com/fedesoriano/hepatitis-c-dataset.
+
+\setlength{\parindent}{0in}
+\setlength{\leftskip}{0in}
+\setlength{\parskip}{0pt}
+\noindent
+
+## Appendix: Code
+*data used to display data into tables is not given here for clarity, but can be found in the Rmarkdown file.
+```{r eval=FALSE}
+#load packages
+here::i_am('FinalProject.Rmd')
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+require(glmnet)
+library(tableone)
+library(dplyr)
+library(kableExtra)
+
+#prepare data
+set.seed(1234)
+data <- read.table(here::here("Data","HepatitisCdata.csv"), 
+                   header = TRUE, sep = ",")
+data_prepped <- data[complete.cases(data),] %>%
+     filter(!Category == "0s=suspect Blood Donor") %>%
+     mutate(MALE = case_when(
+               Sex == "m" ~ 1,
+               Sex != "m" ~ 0),
+            Diagnosis = factor(substr(Category,1,1),
+                               labels = c('Blood Donor','Hepatitis',
+                                          'Fibrosis','Cirrhosis'))) %>%
+     select(-c(Sex,Category,X))
+
+#create data matrix and results vector
+xm <- as.matrix(cbind(pad = 1, data_prepped[,-13]))
+ym <-as.matrix(data_prepped[,13])
+
+#run cv model using both Ridge Regression and LASSO
+cvfit_R <- cv.glmnet(xm, ym, alpha = 0, family = "multinomial", maxit = 600000, 
+                   k = 10, standardize = TRUE, type="class")
+cvfit_L <- cv.glmnet(xm, ym, alpha = 1, family = "multinomial", 
+                   type.multinomial = "ungrouped", maxit = 60000, 
+                   k = 10, standardize = TRUE, type="class")
+
+#view plots of misclassification and lambdas
+par(mfrow=c(1,2),mar=c(4,4,4,1))
+plot(cvfit_R)
+title(main = "Misclassification Error for Lambda Values - Ridge Regression", 
+      line = 3,cex.main = 0.6)
+title(sub = ("Number of Features Included in Model"),  line = -18, 
+      cex.sub = 0.5)
+plot(cvfit_L)
+title(main = "Misclassification Error for Lambda Values - LASSO", line = 3,
+      cex.main = 0.6)
+title(sub = ("Number of Features Included in Model"),  line = -18, 
+      cex.sub = 0.5)
+
+#for each model predict on entire dataset
+pred_min_R<-predict(cvfit_R, newx = xm, 
+                s = "lambda.min", type = "class")
+pred_1se_R<-predict(cvfit_R, newx = xm, 
+                  s = "lambda.1se", type = "class")
+pred_min_L<-predict(cvfit_L, newx = xm, 
+                s = "lambda.min", type = "class")
+pred_1se_L<-predict(cvfit_L, newx = xm, 
+                  s = "lambda.1se", type = "class")
+
+#misclassification tables 
+o = c("Blood Donor","Hepatitis", "Fibrosis","Cirrhosis")
+misclass_tab_minR <- table(pred_min_R,ym)[,o]
+misclass_tab_minL <- table(pred_min_L,ym)[,o]
+misclass_tab_1seR <- table(pred_1se_R,ym)[,o]
+misclass_tab_1seL <- table(pred_1se_L,ym)[,o]
+
+# get misclassification rates
+misclass_rate_minR <- 1-sum(diag(misclass_tab_minR))/sum(misclass_tab_minR)
+misclass_rate_minL <- 1-sum(diag(misclass_tab_minL))/sum(misclass_tab_minL)
+misclass_rate_1seR <- 1-sum(diag(misclass_tab_1seR))/sum(misclass_tab_1seR)
+misclass_rate_1seL <- 1-sum(diag(misclass_tab_1seL))/sum(misclass_tab_1seL)
+
+#coefficients of selected model
+vals <-coef(cvfit_L, s = cvfit_L$lambda.min)
+```
+

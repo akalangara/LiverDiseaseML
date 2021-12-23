@@ -1,0 +1,13 @@
+﻿AGE,age in years (cont)
+ALB,Albumin and total protein (Liver Function Panel)
+ALP,Alkaline phosphatase (Liver Function Panel)
+ALT,Alanine transaminase  (Liver Function Panel)
+AST,Aspartate transaminase (Liver Function Panel)
+BIL,Bilirubin (Liver Function Panel)
+CHE,Acetylcholinesterase
+CHOL,Cholesterol
+CREA,Creatine
+GGT,Gamma-glutamyltransferase
+PROT,Total Protein
+SEX,"biological sex (originally coded m/f); 1=M, 0=F"
+DIAGNOSIS,"'0=Blood Donor', '0s=suspect Blood Donor', '1=Hepatitis', '2=Fibrosis', '3=Cirrhosis'"
