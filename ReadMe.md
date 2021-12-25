@@ -31,9 +31,9 @@ Infection by a viral agent, can result in inflammation of the liver, broadly cal
   ### Execute Analysis
   To execute the analysis, from the `LiverDiseaseML` directory, run the following
   ``` bash
-  Rscript -e "rmarkdown::render('FinalProject.Rmd', output_file = 'Output/FinalProject.pdf', quiet = TRUE)"
+  Rscript -e "rmarkdown::render('FinalProject.Rmd', output_file = 'Output/MLReport.pdf', quiet = TRUE)"
   ```
-  This will create in the `LiverDiseaseML/Output` directory, a file called `FinalProject.pdf` which contains a report of the findings.
+  This will create in the `LiverDiseaseML/Output` directory, a file called `MLReport.pdf` which contains a report of the findings.
   Please note that any errors about convergence can be ignored.
 </details>
 
